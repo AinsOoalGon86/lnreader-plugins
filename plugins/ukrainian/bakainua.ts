@@ -1,198 +1,252 @@
 import { CheerioAPI, load as parseHTML } from 'cheerio';
-import { fetchApi } from '@libs/fetch';
-import { Plugin } from '@/types/plugin';
-import { NovelStatus } from '@libs/novelStatus';
-import { Filters, FilterTypes } from '@libs/filterInputs';
+  import { fetchApi } from '@libs/fetch';
+  import { Plugin } from '@/types/plugin';
+  import { NovelStatus } from '@libs/novelStatus';
+  import { Filters, FilterTypes } from '@libs/filterInputs';
 
-class BakaInUa implements Plugin.PluginBase {
-  id = 'bakainua';
-  name = 'BakaInUA';
-  icon = 'src/uk/bakainua/icon.png';
-  site = 'https://baka.in.ua';
-  version = '2.0.0';
+  class BakaInUa implements Plugin.PluginBase {
+    id = 'bakainua';
+    name = 'BakaInUA';
+    icon = 'src/uk/bakainua/icon.png';
+    site = 'https://baka.in.ua';
+    version = '3.1.2';
 
-  async popularNovels(
-    pageNo: number,
-    {
-      filters,
-      showLatestNovels,
-    }: Plugin.PopularNovelsOptions<typeof this.filters>,
-  ): Promise<Plugin.NovelItem[]> {
-    const fictionIds: string[] = [];
+    async popularNovels(
+      pageNo: number,
+      { filters, showLatestNovels }: Plugin.PopularNovelsOptions<typeof this.filters>,
+    ): Promise<Plugin.NovelItem[]> {
+      const fictionIds: string[] = [];
+      const url = new URL(this.site + '/fictions/alphabetical');
 
-    const url: URL = new URL(this.site + '/fictions/alphabetical');
-
-    if (pageNo > 1) url.searchParams.append('page', pageNo.toString());
-    if (showLatestNovels || (filters && filters.only_new.value))
-      url.searchParams.append('only_new', '1');
-    if (filters) {
-      if (filters.longreads.value) url.searchParams.append('longreads', '1');
-      if (filters.finished.value) url.searchParams.append('finished', '1');
-      if (filters.genre.value !== '')
-        url.searchParams.append('genre', filters.genre.value);
-    }
-
-    const result = await fetchApi(url.toString());
-    const body = await result.text();
-    const $ = parseHTML(body);
-
-    // get the ids of the popular novels
-    $('div#fiction-list-page > div > div > div > img').each((index, elem) => {
-      const fictionId = $(elem).attr('data-fiction-picker-id-param');
-      if (fictionId) {
-        fictionIds.push(fictionId);
+      if (pageNo > 1) url.searchParams.append('page', pageNo.toString());
+      if (showLatestNovels || (filters && filters.only_new.value))
+        url.searchParams.append('only_new', '1');
+      if (filters) {
+        if (filters.longreads.value) url.searchParams.append('longreads', '1');
+        if (filters.finished.value) url.searchParams.append('finished', '1');
+        if (filters.genre.value !== '')
+          url.searchParams.append('genre', filters.genre.value);
       }
-    });
 
-    // fetch the details of the popular novels asynchronously
-    const requests: Promise<Plugin.NovelItem>[] = fictionIds.map(async id => {
-      const res = await fetchApi(`${this.site}/fictions/${id}/details`, {
-        headers: {
-          accept: 'text/vnd.turbo-stream.html',
-        },
+      const result = await fetchApi(url.toString(), {
+        headers: { 'user-agent': 'Mozilla/5.0' },
       });
-      const $ = parseHTML(await res.text());
-      const elem = $('a').first();
 
-      return {
-        name: $('h3').text().trim(),
-        path: elem.attr('href') || '',
-        cover: this.site + $(elem).find('img').attr('src'),
-      };
-    });
+      const body = await result.text();
+      const $ = parseHTML(body);
 
-    return await Promise.all(requests);
-  }
+      $('[data-fiction-picker-id-param]').each((_, elem) => {
+        const id = $(elem).attr('data-fiction-picker-id-param');
+        if (id) fictionIds.push(id);
+      });
 
-  async parseNovel(novelUrl: string): Promise<Plugin.SourceNovel> {
-    const result = await fetchApi(this.site + '/' + novelUrl);
-    const body = await result.text();
-    const $ = parseHTML(body);
+      const requests = fictionIds.map(async id => {
+        try {
+          const res = await fetchApi(`${this.site}/fictions/${id}/details`, {
+            headers: { 'user-agent': 'Mozilla/5.0' },
+          });
+          const detailHtml = await res.text();
+          const $d = parseHTML(detailHtml);
+          const link = $d('a').first();
 
-    const novel: Plugin.SourceNovel = {
-      path: novelUrl,
-      name: $('main div > h1').text().trim(),
-      author: $('button#fictions-author-search').text().trim(),
-      cover: this.site + $('main div > img').attr('src'),
-      summary: $('main div > h3').first().parent().find('div').text().trim(),
-      genres: $('h4:contains("Жанри")')
-        .last()
-        .siblings()
-        .last()
-        .find('span')
-        .map((_, el) => $(el).text().trim())
-        .get()
-        .join(', '),
-    };
+          return {
+            name: $d('h3').text().trim(),
+            path: link.attr('href')?.replace(this.site + '/', '') || '',
+            cover: this.site + link.find('img').attr('src'),
+          };
+        } catch (e) {
+          return null;
+        }
+      });
 
-    switch ($('div:contains("Статус")').last().siblings().text().trim()) {
-      case 'Видаєт.':
-        novel.status = NovelStatus.Ongoing;
-        break;
-      case 'Заверш.':
-        novel.status = NovelStatus.Completed;
-        break;
-      case 'Покину.':
-        novel.status = NovelStatus.OnHiatus;
-        break;
-      default:
-        novel.status = NovelStatus.Unknown;
-        break;
+      const novels = await Promise.all(requests);
+      return novels.filter((n): n is Plugin.NovelItem => n !== null);
     }
 
-    const chapters: Plugin.ChapterItem[] = [];
-    $('li.group a').each((index, elem) => {
-      const chapter: Plugin.ChapterItem = {
-        name: $(elem).find('span').eq(1).text().trim(),
-        path: $(elem).attr('href') || '',
-        chapterNumber: parseInt($(elem).find('span').eq(0).text().trim()),
-        releaseTime: $(elem).find('span').eq(2).text().trim(),
-      };
-      chapters.push(chapter);
+async parseNovel(novelUrl: string): Promise<Plugin.SourceNovel> {
+  // 1. Спочатку відкриваємо сторінку новели
+  const result = await fetchApi(this.site + '/' + novelUrl, {
+    headers: { 'user-agent': 'Mozilla/5.0' },
+  });
+
+  const body = await result.text();
+  const $ = parseHTML(body);
+
+  // 2. Збираємо доступні переклади
+  const translators = $('turbo-frame#alternative-tabs form')
+    .map((_, form) => {
+      const name = $(form).find('button span').first().text().trim();
+      const ids = $(form)
+        .find('input[name="translator[]"]')
+        .map((_, input) => $(input).attr('value') || '')
+        .get();
+      return { name, ids };
+    })
+    .get();
+
+  // 3. Вибір перекладу (за замовчуванням перший)
+  const selected = translators[0];
+
+  // 4. Будуємо URL з параметрами translator[]
+  const url = new URL(this.site + '/' + novelUrl);
+  if (selected?.ids?.length) {
+    selected.ids.forEach(id => url.searchParams.append('translator[]', id));
+  }
+
+  // 5. Завантажуємо сторінку вже з вибраним перекладом
+  const translatedRes = await fetchApi(url.toString(), {
+    headers: { 'user-agent': 'Mozilla/5.0' },
+  });
+
+  const translatedBody = await translatedRes.text();
+  const $$ = parseHTML(translatedBody);
+
+  // 6. Основні дані новели
+  const coverSrc = $$('img.w-32.h-48').first().attr('src') || '';
+
+  const novel: Plugin.SourceNovel = {
+    path: novelUrl,
+    name: $$('h1').first().text().trim(),
+    author: selected?.name || 'Невідомо',
+    cover: coverSrc.startsWith('http') ? coverSrc : this.site + coverSrc,
+    summary: $$('h3:contains("Опис"), h2:contains("Опис")')
+      .parent()
+      .find('div.text-justify, .prose')
+      .text()
+      .trim(),
+    genres: $$('h4:contains("Жанри")')
+      .next()
+      .find('span')
+      .map((_, el) => $$(el).text().trim())
+      .get()
+      .join(', '),
+  };
+
+  // 7. Статус
+  const statusText = $$('h4:contains("Статус")').next().text().trim();
+  if (statusText.includes('Видається')) novel.status = NovelStatus.Ongoing;
+  else if (statusText.includes('Завершено')) novel.status = NovelStatus.Completed;
+  else if (statusText.includes('Покинуто')) novel.status = NovelStatus.OnHiatus;
+  else novel.status = NovelStatus.Unknown;
+
+  // 8. Глави
+  const chapters: Plugin.ChapterItem[] = [];
+  $$('li.group a[href*="/chapters/"]').each((_, elem) => {
+    const href = $$(elem).attr('href') || '';
+    chapters.push({
+      name: $$(elem).find('span').eq(1).text().trim() || 'Розділ',
+      path: href.replace(this.site + '/', ''),
+      chapterNumber:
+        parseFloat($$(elem).find('span').eq(0).text().replace(',', '.')) || 0,
+      releaseTime: $$(elem).find('span').eq(2).text().trim(),
     });
+  });
 
-    novel.chapters = chapters.reverse();
-    return novel;
-  }
+  novel.chapters = chapters.reverse();
 
-  async parseChapter(chapterUrl: string): Promise<string> {
-    const result = await fetchApi(this.site + '/' + chapterUrl);
-    const body = await result.text();
-    const $ = parseHTML(body);
-    return $('#user-content').html() || '';
-  }
-
-  async searchNovels(searchTerm: string): Promise<Plugin.NovelItem[]> {
-    const novels: Plugin.NovelItem[] = [];
-
-    const result = await fetchApi(
-      this.site + '/search?search%5B%5D=' + searchTerm + '&only_fictions=true',
-    );
-    const body = await result.text();
-    const $ = parseHTML(body);
-    $('ul > section').each((index, elem) => {
-      novels.push({
-        path: $(elem).find('a').first().attr('href') || '',
-        name: $(elem).find('a > h2').first().text().trim(),
-        cover: this.site + $(elem).find('img').first().attr('src'),
-      });
-    });
-    return novels;
-  }
-
-  filters = {
-    genre: {
-      type: FilterTypes.Picker,
-      label: 'Жанр',
-      value: '',
-      options: [
-        { label: 'Всі жанри', value: '' },
-        { label: 'BL', value: '19' },
-        { label: 'GL', value: '20' },
-        { label: 'Авторське', value: '32' },
-        { label: 'Бойовик', value: '2' },
-        { label: 'Вуся', value: '16' },
-        { label: 'Гарем', value: '5' },
-        { label: 'Детектив', value: '22' },
-        { label: 'Драма', value: '12' },
-        { label: 'Жахи', value: '10' },
-        { label: 'Ісекай', value: '13' },
-        { label: 'Історичне', value: '15' },
-        { label: 'Комедія', value: '11' },
-        { label: 'ЛГБТ', value: '3' },
-        { label: 'Містика', value: '18' },
-        { label: 'Омегаверс', value: '30' },
-        { label: 'Повсякденність', value: '17' },
-        { label: 'Пригоди', value: '7' },
-        { label: 'Психологія', value: '28' },
-        { label: 'Романтика', value: '1' },
-        { label: 'Спорт', value: '9' },
-        { label: 'Сюаньхвань', value: '27' },
-        { label: 'Сянься', value: '26' },
-        { label: 'Трагедія', value: '24' },
-        { label: 'Трилер', value: '21' },
-        { label: 'Фантастика', value: '8' },
-        { label: 'Фанфік', value: '23' },
-        { label: 'Фентезі', value: '4' },
-        { label: 'Школа', value: '6' },
-      ],
-    },
-    only_new: {
-      type: FilterTypes.Switch,
-      label: 'Новинки',
-      value: false,
-    },
-    longreads: {
-      type: FilterTypes.Switch,
-      label: 'Довгочити',
-      value: false,
-    },
-    finished: {
-      type: FilterTypes.Switch,
-      label: 'Завершене',
-      value: false,
-    },
-  } satisfies Filters;
+  return novel;
 }
 
-export default new BakaInUa();
+
+    async parseChapter(chapterUrl: string): Promise<string> {
+      const result = await fetchApi(this.site + '/' + chapterUrl, {
+        headers: { 'user-agent': 'Mozilla/5.0' },
+      });
+
+      const body = await result.text();
+      const $ = parseHTML(body);
+
+      // Baka.in.ua використовує ActionText (Trix), текст зазвичай у .trix-content або .prose
+      let content = $('.trix-content, .prose, article, #chapter-content').first();
+      
+      // Якщо основний селектор порожній, шукаємо прихований текст у data-атрібутах (особливість Hotwire/Turbo)
+      if (!content.text().trim()) {
+        const hiddenData = $('[data-chapter-content-value]').attr('data-chapter-content-value');
+        if (hiddenData) return hiddenData;
+      }
+
+      content.find('script, style, button, form, .ads, .social-share').remove();
+      
+      let chapterHtml = content.html();
+
+      // Останній шанс: пошук тексту в JSON всередині скриптів через Regex
+      if (!chapterHtml || chapterHtml.trim().length < 100) {
+        const match = body.match(/"content\\":\\"(.*?)\\"/);
+        if (match && match[1]) {
+          chapterHtml = match[1]
+            .replace(/\\n/g, '<br>')
+            .replace(/\\"/g, '"')
+            .replace(/\\u003c/g, '<')
+            .replace(/\\u003e/g, '>');
+        }
+      }
+
+      return chapterHtml || 'Контент не знайдено. Можливо, потрібна авторизація на сайті.';
+    }
+
+    async searchNovels(searchTerm: string): Promise<Plugin.NovelItem[]> {
+      const result = await fetchApi(
+        `${this.site}/search?search[]=${encodeURIComponent(searchTerm)}&only_fictions=true`,
+        { headers: { 'user-agent': 'Mozilla/5.0' } },
+      );
+
+      const body = await result.text();
+      const $ = parseHTML(body);
+      const novels: Plugin.NovelItem[] = [];
+
+      $('section.flex.flex-col').each((_, elem) => {
+        const link = $(elem).find('a').first();
+        novels.push({
+          path: link.attr('href')?.replace(this.site + '/', '') || '',
+          name: $(elem).find('h2').text().trim(),
+          cover: this.site + $(elem).find('img').attr('src'),
+        });
+      });
+
+      return novels;
+    }
+
+filters = {
+  genre: {
+    type: FilterTypes.Picker,
+    label: 'Жанр',
+    value: '',
+    options: [
+      { label: 'Всі жанри', value: '' },
+      { label: 'BL', value: '19' },
+      { label: 'GL', value: '20' },
+      { label: 'Авторське', value: '32' },
+      { label: 'Бойовик', value: '2' },
+      { label: 'Вуся', value: '16' },
+      { label: 'Гарем', value: '5' },
+      { label: 'Детектив', value: '22' },
+      { label: 'Драма', value: '12' },
+      { label: 'Жахи', value: '10' },
+      { label: 'Ісекай', value: '13' },
+      { label: 'Історичне', value: '15' },
+      { label: 'Комедія', value: '11' },
+      { label: 'ЛГБТ', value: '3' },
+      { label: 'Містика', value: '18' },
+      { label: 'Омегаверс', value: '30' },
+      { label: 'Повсякденність', value: '17' },
+      { label: 'Пригоди', value: '7' },
+      { label: 'Психологія', value: '28' },
+      { label: 'Романтика', value: '1' },
+      { label: 'Спорт', value: '9' },
+      { label: 'Сюаньхвань', value: '27' },
+      { label: 'Сянься', value: '26' },
+      { label: 'Трагедія', value: '24' },
+      { label: 'Трилер', value: '21' },
+      { label: 'Фантастика', value: '8' },
+      { label: 'Фанфік', value: '23' },
+      { label: 'Фентезі', value: '4' },
+      { label: 'Школа', value: '6' },
+    ],
+  },
+  only_new: { type: FilterTypes.Switch, label: 'Новинки', value: false },
+  longreads: { type: FilterTypes.Switch, label: 'Довгочити', value: false },
+  finished: { type: FilterTypes.Switch, label: 'Завершене', value: false },
+} satisfies Filters;
+  }
+
+  export default new BakaInUa();
