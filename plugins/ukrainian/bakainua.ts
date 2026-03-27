@@ -9,7 +9,9 @@ import { CheerioAPI, load as parseHTML } from 'cheerio';
     name = 'BakaInUA';
     icon = 'src/uk/bakainua/icon.png';
     site = 'https://baka.in.ua';
-    version = '3.1.2';
+    version = '3.1.4';
+
+// Comment for test
 
     async popularNovels(
       pageNo: number,
