@@ -9,7 +9,7 @@ class BakaInUa implements Plugin.PluginBase {
   name = 'BakaInUA';
   icon = 'src/uk/bakainua/icon.png';
   site = 'https://baka.in.ua';
-  version = '3.1.5';
+  version = '3.1.6';
 
   async popularNovels(
     pageNo: number,
@@ -104,35 +104,43 @@ class BakaInUa implements Plugin.PluginBase {
     const translatedBody = await translatedRes.text();
     const $$ = parseHTML(translatedBody);
 
-    // 6. Основні дані новели
-    const coverSrc = $$('img.w-32.h-48').first().attr('src') || '';
+    let cover = $$('meta[property="og:image"]').attr('content') || '';
+    if (cover && !cover.startsWith('http')) {
+      cover = this.site + cover;
+    }
 
     const novel: Plugin.SourceNovel = {
       path: novelUrl,
       name: $$('h1').first().text().trim(),
-      author: selected?.name || 'Невідомо',
-      cover: coverSrc.startsWith('http') ? coverSrc : this.site + coverSrc,
-      summary: $$('h3:contains("Опис"), h2:contains("Опис")')
-        .parent()
-        .find('div.text-justify, .prose')
+      author: $$('#fictions-author-search').text().trim() || 'Невідомо',
+      artist: $$('#fictions-author-search').text().trim() || 'Невідомо',
+      cover,
+      summary: $$('div.whitespace-pre-line')
+        .first()
         .text()
+        .replace(/\s+/g, ' ')
         .trim(),
-      genres: $$('h4:contains("Жанри")')
-        .next()
-        .find('span')
+      genres: $$('div.flex.flex-wrap.gap-2 span')
         .map((_, el) => $$(el).text().trim())
         .get()
         .join(', '),
     };
 
     // 7. Статус
-    const statusText = $$('h4:contains("Статус")').next().text().trim();
-    if (statusText.includes('Видається')) novel.status = NovelStatus.Ongoing;
-    else if (statusText.includes('Завершено'))
+    const statusText = $$('div.text-sm:contains("Статус")') // Знаходимо підпис "Статус"
+      .prev('div.text-2xl') // Беремо попередній div з класом text-2xl
+      .text()
+      .trim();
+
+    if (statusText.includes('Заверш')) {
       novel.status = NovelStatus.Completed;
-    else if (statusText.includes('Покинуто'))
+    } else if (statusText.includes('Видаєт')) {
+      novel.status = NovelStatus.Ongoing;
+    } else if (statusText.includes('Покину')) {
       novel.status = NovelStatus.OnHiatus;
-    else novel.status = NovelStatus.Unknown;
+    } else {
+      novel.status = NovelStatus.Unknown;
+    }
 
     // 8. Глави
     const chapters: Plugin.ChapterItem[] = [];
